@@ -1,0 +1,32 @@
+# Example ICP: roofing contractors that do commercial work.
+name: Commercial roofing contractors
+description: Roofers with a commercial / industrial division (bigger jobs, bigger budgets).
+queries:
+- roofing contractor
+- commercial roofing
+locations:
+- Dallas, TX
+- Fort Worth, TX
+keywords:
+- commercial roof*: 3
+- TPO: 3
+- EPDM: 2
+- flat roof*: 2
+- metal roof*: 2
+- industrial: 2
+- property manager*: 2
+- insurance claim*
+- storm damage
+- free inspection
+required_keywords: []
+exclude_keywords:
+- residential only
+filters:
+  min_reviews: 10
+  require_website: true
+  exclude_categories:
+  - roofing supply store
+max_results_per_search: 60
+pages_per_site: 5
+min_score: 20
+skip_seen: true

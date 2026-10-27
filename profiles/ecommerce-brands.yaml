@@ -1,0 +1,26 @@
+# Example ICP: local retail shops that also sell online (Shopify / WooCommerce).
+name: Local shops selling online
+description: Brick-and-mortar boutiques that already run an online store.
+queries:
+- boutique
+- gift shop
+- clothing store
+locations:
+- Nashville, TN
+keywords:
+- shop online: 3
+- free shipping: 3
+- add to cart: 3
+- shopify: 2
+- gift card*: 2
+- new arrivals
+- wholesale
+required_keywords: []
+exclude_keywords: []
+filters:
+  min_rating: 4.0
+  require_website: true
+max_results_per_search: 60
+pages_per_site: 4
+min_score: 25
+skip_seen: true

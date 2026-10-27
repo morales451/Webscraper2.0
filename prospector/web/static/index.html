@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prospector</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%232563eb' d='M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7Zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5Z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7Zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5Z"/></svg>
+    Prospector
+  </div>
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="search">Search</button>
+    <button class="tab" data-tab="leads">Leads</button>
+    <button class="tab" data-tab="runs">Runs</button>
+    <button class="tab" data-tab="profiles">Profiles</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ============================== SEARCH ============================== -->
+  <section id="tab-search" class="panel active">
+    <div class="search-layout">
+      <form id="search-form" class="card form" autocomplete="off">
+        <div class="row between">
+          <h2>Find prospects</h2>
+          <select id="profile-select" title="Load a saved profile"></select>
+        </div>
+        <p class="hint" id="profile-hint">Pick a saved customer profile, or fill in a quick search below.</p>
+
+        <label>Profile name
+          <input name="name" required placeholder="e.g. Dentists offering implants">
+        </label>
+        <label>Description <span class="muted">(optional)</span>
+          <input name="description" placeholder="Who this is and why they buy">
+        </label>
+
+        <div class="grid2">
+          <label>What to search on Google Maps <span class="muted">one per line</span>
+            <textarea name="queries" rows="3" required placeholder="e.g. dentist&#10;cosmetic dentist"></textarea>
+          </label>
+          <label>Where <span class="muted">one per line</span>
+            <textarea name="locations" rows="3" placeholder="e.g. Austin, TX&#10;Round Rock, TX&#10;78704"></textarea>
+          </label>
+        </div>
+
+        <label>Website keywords that signal a fit <span class="muted">one per line · add <code>| 3</code> for weight · <code>*</code> = wildcard</span>
+          <textarea name="keywords" rows="4" placeholder="e.g. dental implant* | 3&#10;sedation | 2&#10;invisalign&#10;financing"></textarea>
+        </label>
+
+        <div class="grid2">
+          <label>Must mention at least one <span class="muted">optional</span>
+            <textarea name="required_keywords" rows="2" placeholder="e.g. implant*"></textarea>
+          </label>
+          <label>Disqualify if site mentions <span class="muted">optional</span>
+            <textarea name="exclude_keywords" rows="2" placeholder="e.g. franchise&#10;now hiring"></textarea>
+          </label>
+        </div>
+
+        <details class="filters">
+          <summary>Filters &amp; limits</summary>
+          <div class="grid3">
+            <label>Min rating <input name="min_rating" type="number" step="0.1" min="0" max="5" placeholder="any"></label>
+            <label>Min reviews <input name="min_reviews" type="number" min="0" placeholder="any"></label>
+            <label>Max reviews <input name="max_reviews" type="number" min="0" placeholder="any"></label>
+          </div>
+          <div class="grid2">
+            <label>Only these categories <span class="muted">one per line, partial match</span>
+              <textarea name="include_categories" rows="2" placeholder="e.g. dentist"></textarea>
+            </label>
+            <label>Skip these categories
+              <textarea name="exclude_categories" rows="2" placeholder="e.g. dental laboratory"></textarea>
+            </label>
+          </div>
+          <label>Skip business names containing <span class="muted">e.g. chains</span>
+            <textarea name="exclude_names" rows="2" placeholder="e.g. Aspen Dental&#10;Western Dental"></textarea>
+          </label>
+          <div class="checks">
+            <label class="check"><input type="checkbox" name="require_website"> Must have website</label>
+            <label class="check"><input type="checkbox" name="require_phone"> Must have phone</label>
+            <label class="check"><input type="checkbox" name="require_email"> Must have email</label>
+            <label class="check"><input type="checkbox" name="exclude_closed" checked> Skip closed businesses</label>
+            <label class="check"><input type="checkbox" name="skip_seen" checked> Skip businesses found in earlier runs</label>
+          </div>
+          <div class="grid4">
+            <label>Results per search <input name="max_results_per_search" type="number" min="1" max="500" value="60"></label>
+            <label>Max leads (total) <input name="max_leads" type="number" min="1" placeholder="no limit"></label>
+            <label>Pages per website <input name="pages_per_site" type="number" min="1" max="20" value="5"></label>
+            <label>Min score to qualify <input name="min_score" type="number" min="0" max="100" value="0"></label>
+          </div>
+        </details>
+
+        <details class="filters">
+          <summary>How to search</summary>
+          <div class="grid3">
+            <label>Listing source
+              <select name="source">
+                <option value="auto">Auto (API if key set)</option>
+                <option value="api">Google Places API</option>
+                <option value="browser">Google Maps (browser)</option>
+              </select>
+            </label>
+            <label class="check pad"><input type="checkbox" name="details" checked> Open each listing (full address &amp; phone)</label>
+            <label class="check pad"><input type="checkbox" name="enrich" checked> Visit websites (emails &amp; keywords)</label>
+          </div>
+        </details>
+
+        <div class="error" id="form-error" hidden></div>
+        <div class="row actions">
+          <button type="submit" class="primary" id="start-btn">Start search</button>
+          <button type="button" id="save-profile-btn">Save profile</button>
+          <button type="button" id="save-as-btn" class="ghost">Save as new…</button>
+          <span class="muted small" id="search-count"></span>
+        </div>
+      </form>
+
+      <div class="card run-panel" id="run-panel">
+        <div class="empty" id="run-empty">
+          <h3>No search running</h3>
+          <p class="muted">Start a search and leads will appear here as they're found and checked.</p>
+        </div>
+        <div id="run-live" hidden>
+          <div class="row between">
+            <h2 id="run-title">Run</h2>
+            <div class="row">
+              <span class="badge" id="run-status"></span>
+              <button id="run-stop" class="danger small-btn" hidden>Stop</button>
+              <button id="run-open" class="small-btn">Open in Leads</button>
+            </div>
+          </div>
+          <div class="progress"><div class="bar" id="run-bar"></div></div>
+          <div class="stats" id="run-stats"></div>
+          <div class="error" id="run-error" hidden></div>
+          <details class="log"><summary>Activity log</summary><ol id="run-log"></ol></details>
+          <div class="table-wrap compact"><table class="leads"><thead><tr>
+            <th>Score</th><th>Business</th><th>Email</th><th>Matched</th>
+          </tr></thead><tbody id="run-leads"></tbody></table></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== LEADS ============================== -->
+  <section id="tab-leads" class="panel">
+    <div class="card">
+      <div class="toolbar">
+        <select id="lf-run"></select>
+        <input id="lf-q" type="search" placeholder="Search name, email, address, notes…">
+        <select id="lf-qualified">
+          <option value="true">Qualified only</option>
+          <option value="">All leads</option>
+          <option value="false">Not qualified</option>
+        </select>
+        <select id="lf-email">
+          <option value="">Any email</option>
+          <option value="true">Has email</option>
+          <option value="false">No email</option>
+        </select>
+        <select id="lf-status"><option value="">Any status</option></select>
+        <label class="inline">Min score <input id="lf-score" type="number" min="0" max="100" style="width:4.5em"></label>
+        <span class="grow"></span>
+        <button id="export-csv">Export CSV</button>
+        <button id="export-xlsx" class="primary">Export Excel</button>
+      </div>
+      <div class="muted small" id="lf-summary"></div>
+      <div class="table-wrap"><table class="leads sortable">
+        <thead><tr>
+          <th data-sort="score">Score</th>
+          <th data-sort="name">Business</th>
+          <th>Email</th>
+          <th>Phone</th>
+          <th>Website</th>
+          <th data-sort="rating">Rating</th>
+          <th>Matched keywords</th>
+          <th>Status</th>
+        </tr></thead>
+        <tbody id="leads-body"></tbody>
+      </table></div>
+      <div class="row pager"><button id="lf-more" class="ghost" hidden>Load more</button></div>
+    </div>
+  </section>
+
+  <!-- ============================== RUNS ============================== -->
+  <section id="tab-runs" class="panel">
+    <div class="card">
+      <h2>Past runs</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>#</th><th>Started</th><th>Profile</th><th>Source</th><th>Status</th><th>Found</th><th>Checked</th><th>Qualified</th><th></th></tr></thead>
+        <tbody id="runs-body"></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- ============================== PROFILES ============================== -->
+  <section id="tab-profiles" class="panel">
+    <div class="row between"><h2>Ideal customer profiles</h2><button class="primary" id="new-profile">New profile</button></div>
+    <p class="muted">Profiles are saved as YAML files in <code id="profiles-dir"></code> — you can also edit or share them directly.</p>
+    <div class="profile-grid" id="profiles-list"></div>
+  </section>
+
+  <!-- ============================== SETTINGS ============================== -->
+  <section id="tab-settings" class="panel">
+    <form class="card form narrow" id="settings-form">
+      <h2>Settings</h2>
+      <label>Default listing source
+        <select name="source">
+          <option value="auto">Auto — Places API when a key is set, otherwise browser</option>
+          <option value="api">Google Places API</option>
+          <option value="browser">Google Maps in a headless browser (free)</option>
+        </select>
+      </label>
+      <label>Google Places API key <span class="muted" id="key-state"></span>
+        <input name="places_api_key" type="password" placeholder="AIza…  (leave blank to keep current)">
+      </label>
+      <p class="hint">Create one in Google Cloud Console → APIs &amp; Services → enable <b>Places API (New)</b> → Credentials. Google bills Text Search per request after the monthly free credit.</p>
+      <div class="checks">
+        <label class="check"><input type="checkbox" name="headless"> Hide the browser window while scraping</label>
+        <label class="check"><input type="checkbox" name="render_js"> Render JavaScript-heavy websites (Wix, Squarespace…) when needed</label>
+        <label class="check"><input type="checkbox" name="respect_robots"> Respect websites' robots.txt</label>
+        <label class="check"><input type="checkbox" name="use_browser_profile"> Reuse a saved browser profile (sign in with <code>prospector browser-login</code>)</label>
+      </div>
+      <div class="grid2">
+        <label>Websites crawled in parallel <input name="site_concurrency" type="number" min="1" max="32"></label>
+        <label>Website timeout (seconds) <input name="request_timeout" type="number" min="3" max="120"></label>
+      </div>
+      <div class="row actions"><button type="submit" class="primary">Save settings</button><span class="muted small" id="settings-saved"></span></div>
+      <p class="muted small">Data folder: <code id="data-dir"></code></p>
+    </form>
+  </section>
+</main>
+
+<!-- Lead details drawer -->
+<aside class="drawer" id="drawer" hidden>
+  <div class="drawer-inner">
+    <button class="close" id="drawer-close" aria-label="Close">×</button>
+    <div id="drawer-body"></div>
+  </div>
+</aside>
+<div class="toast" id="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

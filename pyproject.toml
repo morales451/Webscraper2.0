@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prospector"
+version = "0.1.0"
+description = "Find prospects on Google Maps and qualify them by the keywords on their websites."
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "pyyaml>=6.0",
+    "openpyxl>=3.1",
+    "pydantic>=2.5",
+    "playwright>=1.44",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+prospector = "prospector.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["prospector*"]
+
+[tool.setuptools.package-data]
+prospector = ["web/static/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
