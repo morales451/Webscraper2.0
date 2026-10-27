@@ -184,8 +184,10 @@ Paste it in **Settings** (or put `GOOGLE_PLACES_API_KEY=…` in a `.env` file; s
 One Google Maps search stops at roughly 100–120 results (the API at 60), so a single search for "dentist in
 Dallas" misses most of them. With **split into areas** on, Prospector looks each location up on
 OpenStreetMap, cuts it into a grid (up to *Max areas*, never smaller than ~3 km), and searches each cell
-separately, merging duplicates. In a live test this found **152 dentists in Boise vs 40** from one search.
-Listings already found in a neighbouring cell aren't opened again, which keeps it fast.
+separately, merging duplicates. In a live test for "dentist in Boise, ID", one search stopped at **106**
+results; splitting into 9 areas found **175** (92 of them never shown by the single search) in about 3
+minutes. Listings already found in a neighbouring cell aren't opened again, which keeps it fast. Tip: add
+nearby towns (Meridian, Eagle…) as extra locations, since the grid covers the city's own boundary.
 
 It's more searches, so it takes longer, and in browser mode Google may show a CAPTCHA after a few hundred
 listings. When that happens Prospector pauses for two minutes, slows down, and retries once. If it's still
