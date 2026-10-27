@@ -27,6 +27,10 @@ EDITABLE_KEYS = (
     "site_concurrency",
     "request_timeout",
     "use_browser_profile",
+    "anthropic_api_key",
+    "ai_model",
+    "search_delay",
+    "maps_concurrency",
 )
 
 
@@ -71,6 +75,13 @@ class Settings:
     # Keep Chromium's cookies between runs (data/browser-profile). Lets you sign in to Google
     # once (`prospector browser-login`) so Maps shows its full view instead of the limited one.
     use_browser_profile: bool = False
+    # Optional AI fit notes.
+    anthropic_api_key: str = ""
+    ai_model: str = "claude-opus-5-5"
+    # Pause between Google Maps searches (seconds) — gentler on Google, fewer CAPTCHAs.
+    search_delay: float = 2.0
+    # Listings opened in parallel by the browser source.
+    maps_concurrency: int = 4
     chromium_path: str = ""
     host: str = "127.0.0.1"
     port: int = 8000
@@ -99,9 +110,10 @@ class Settings:
     def public_dict(self) -> dict:
         """Settings safe to send to the browser (API key masked)."""
         data = {k: getattr(self, k) for k in EDITABLE_KEYS}
-        key = self.places_api_key
-        data["places_api_key"] = (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("set" if key else "")
-        data["has_places_api_key"] = bool(key)
+        for name in ("places_api_key", "anthropic_api_key"):
+            key = getattr(self, name)
+            data[name] = (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("set" if key else "")
+            data[f"has_{name}"] = bool(key)
         data["data_dir"] = str(self.data_dir)
         data["profiles_dir"] = str(self.profiles_dir)
         return data
@@ -140,6 +152,10 @@ def _apply(settings: Settings, values: dict) -> None:
             value = max(1, min(32, int(value)))
         elif key == "request_timeout":
             value = max(3.0, min(120.0, float(value)))
+        elif key == "search_delay":
+            value = max(0.0, min(60.0, float(value)))
+        elif key == "maps_concurrency":
+            value = max(1, min(8, int(value)))
         else:
             value = str(value or "").strip()
         setattr(settings, key, value)
@@ -163,6 +179,8 @@ def load_settings(env_file: Path | None = None) -> Settings:
     s.headless = _as_bool(env.get("PROSPECTOR_HEADLESS"), True)
     s.render_js = _as_bool(env.get("PROSPECTOR_RENDER_JS"), True)
     s.respect_robots = _as_bool(env.get("PROSPECTOR_RESPECT_ROBOTS"), True)
+    s.anthropic_api_key = env.get("ANTHROPIC_API_KEY", "").strip()
+    s.ai_model = (env.get("PROSPECTOR_AI_MODEL") or s.ai_model).strip()
     s.use_browser_profile = _as_bool(env.get("PROSPECTOR_BROWSER_PROFILE"), False)
     s.chromium_path = env.get("PROSPECTOR_CHROMIUM_PATH", "").strip()
     s.host = env.get("PROSPECTOR_HOST", s.host)

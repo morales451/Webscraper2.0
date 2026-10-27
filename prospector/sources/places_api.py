@@ -106,9 +106,14 @@ class GooglePlacesApiSource:
             return resp.json()
         raise SourceError("Google Places API kept returning errors (rate limited?). Try again later.")
 
-    async def search(self, query: str, limit: int) -> AsyncIterator[Place]:
+    async def search(self, query: str, limit: int, area=None, want=None) -> AsyncIterator[Place]:
         limit = min(limit, MAX_RESULTS_PER_QUERY)
         body: dict = {"textQuery": query, "pageSize": min(20, limit), "languageCode": self.language}
+        if area is not None:
+            body["locationRestriction"] = {"rectangle": {
+                "low": {"latitude": area.south, "longitude": area.west},
+                "high": {"latitude": area.north, "longitude": area.east},
+            }}
         if self.region:
             body["regionCode"] = self.region
         count = 0

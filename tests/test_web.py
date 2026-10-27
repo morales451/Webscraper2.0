@@ -109,3 +109,40 @@ def test_run_leads_update_and_export(client):
 def test_api_source_requires_key(client):
     r = client.post("/api/runs", json={"profile": PROFILE, "source": "api"})
     assert r.status_code == 422 and "API key" in r.json()["detail"]
+
+
+def test_bulk_presets_selection_and_chains(client):
+    run = client.post("/api/runs", json={"profile": PROFILE, "source": "browser"}).json()
+    run = wait_for_run(client, run["id"])
+    leads = client.get(f"/api/leads?run_id={run['id']}").json()["leads"]
+    ids = [l["id"] for l in leads[:2]]
+
+    r = client.post("/api/leads/bulk", json={"ids": ids, "status": "contacted"}).json()
+    assert r == {"updated": 2}
+    assert client.get("/api/leads?status=contacted").json()["total"] == 2
+    assert client.post("/api/leads/bulk", json={"ids": ids, "status": "nope"}).status_code == 422
+
+    sel = client.get(f"/api/leads/export?ids={ids[0]}&format=csv").content.decode("utf-8-sig").splitlines()
+    assert len(sel) == 2
+    hub = client.get(f"/api/leads/export?run_id={run['id']}&preset=hubspot")
+    assert hub.content.decode("utf-8-sig").startswith("Company name,")
+    assert 'leads-run' in hub.headers["content-disposition"] and "hubspot" in hub.headers["content-disposition"]
+    assert client.get("/api/leads/export?preset=bogus").status_code == 422
+
+    # Smile Dental and Low Rated Dental share smile.example: grouped they become one row.
+    grouped = client.get(f"/api/leads?run_id={run['id']}&group_chains=true").json()
+    assert grouped["total"] == run["processed"] - 1
+    assert max(l["chain_size"] for l in grouped["leads"]) == 2
+
+
+def test_profile_schedule_shows_next_run(client):
+    client.post("/api/profiles", json={**PROFILE, "name": "Sched", "schedule": "weekly"})
+    item = next(p for p in client.get("/api/profiles").json() if p["id"] == "sched")
+    assert item["schedule"] == "weekly" and item["next_run_at"].startswith("1970")
+
+
+def test_settings_new_fields_and_masking(client):
+    s = client.put("/api/settings", json={"anthropic_api_key": "sk-ant-abcdefghijklmnop", "search_delay": 4,
+                                          "maps_concurrency": 99, "ai_model": "claude-haiku-5-5"}).json()
+    assert s["has_anthropic_api_key"] and s["anthropic_api_key"] == "sk-a…mnop"
+    assert s["search_delay"] == 4 and s["maps_concurrency"] == 8 and s["ai_model"] == "claude-haiku-5-5"

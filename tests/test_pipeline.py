@@ -59,7 +59,7 @@ async def test_full_run(settings, patched):
 
     leads = {l["name"]: l for l in store.query_leads(run_id=run_id)[0]}
     smile = leads["Smile Dental"]
-    assert smile["qualified"] and smile["score"] == 100
+    assert smile["qualified"] and smile["score"] >= 90
     assert smile["website"] == "https://smile.example/" and smile["domain"] == "smile.example"
     assert "hello@smile.example" in smile["emails"]
     assert {m["term"] for m in smile["matches"]} == {"implant*", "sedation", "invisalign"}
@@ -132,7 +132,7 @@ async def test_stopping_early_closes_the_source_generator(settings, monkeypatch)
     class Endless:
         name = "endless"
 
-        async def search(self, query, limit):
+        async def search(self, query, limit, area=None, want=None):
             from prospector.sources.base import Place
             try:
                 for i in range(limit):
@@ -155,7 +155,7 @@ async def test_source_errors_fail_the_run(settings, monkeypatch):
     class Broken:
         name = "broken"
 
-        async def search(self, query, limit):
+        async def search(self, query, limit, area=None, want=None):
             raise SourceError("Google Places API error 403: API key not valid")
             yield  # pragma: no cover
 

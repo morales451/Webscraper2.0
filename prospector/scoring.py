@@ -1,8 +1,17 @@
 """Qualify and score a prospect against an ICP profile.
 
-Score (0-100) = weight of the keywords found / weight of all keywords. A keyword counts once
-no matter how many times it appears, so a site that mentions five of your signals beats one
-that repeats a single word fifty times. Negative weights subtract.
+Each keyword earns *credit* between 0 and 1 depending on how strongly the business shows it:
+
+  * where it appears — Google Maps name/category, a page title, heading or meta description,
+    or a detected website signal is strong (0.9); ordinary page text is solid (0.7); text that
+    only appears in the navigation menu or footer is weak (0.4)
+  * how widely — +0.1 for each extra page that mentions it (up to +0.2), +0.1 for 5+ mentions
+
+Score (0-100) = Σ(weight × credit) / Σ(weight). So a site that features five of your signals
+in its headings beats one whose menu merely links to them. Negative weights subtract.
+
+A keyword can list synonyms separated by " / " — ``TPO / single-ply / membrane roof*`` counts
+as one signal, matched by any of its forms.
 
 Every match keeps a few text snippets and the page it came from, so you can see *why* a
 prospect scored the way it did.
@@ -21,14 +30,27 @@ from .sources.base import Place
 SNIPPET_RADIUS = 70
 MAX_SNIPPETS = 3
 
+STRONG, BODY, CHROME = "strong", "body", "chrome"
+ZONE_CREDIT = {STRONG: 0.9, BODY: 0.7, CHROME: 0.4}
+ZONE_LABEL = {STRONG: "featured", BODY: "page text", CHROME: "menu/footer only"}
+SYNONYM_SEP = re.compile(r"\s+/\s+")
+
+
+def split_synonyms(term: str) -> list[str]:
+    return [t for t in SYNONYM_SEP.split(term.strip()) if t]
+
 
 @lru_cache(maxsize=2048)
 def compile_term(term: str) -> re.Pattern:
     """Whole-word, case-insensitive matcher. ``*`` is a wildcard: ``implant*`` matches
-    'implant', 'implants', 'implantology'. Spaces match any whitespace."""
-    parts = [re.escape(p) for p in term.strip().split()]
-    body = r"\s+".join(parts).replace(r"\*", r"[\w-]*")
-    return re.compile(rf"(?<![\w]){body}(?![\w])", re.I)
+    'implant', 'implants', 'implantology'. Spaces match any whitespace. ``a / b`` matches
+    either form."""
+    alternatives = []
+    for alt in split_synonyms(term) or [term]:
+        parts = [re.escape(p) for p in alt.split()]
+        alternatives.append(r"\s+".join(parts).replace(r"\*", r"[\w-]*"))
+    body = "|".join(f"(?:{a})" for a in alternatives)
+    return re.compile(rf"(?<![\w])(?:{body})(?![\w])", re.I)
 
 
 @dataclass
@@ -37,6 +59,17 @@ class KeywordMatch:
     weight: float
     count: int = 0
     snippets: list[dict] = field(default_factory=list)
+    credit: float = 0.0
+    pages: int = 0
+    zone: str = ""
+
+
+@dataclass
+class Doc:
+    where: str  # page URL or "Google Maps name" etc.
+    zone: str   # STRONG / BODY / CHROME
+    text: str
+    page: int | None = None  # page index, for counting how many pages mention a term
 
 
 @dataclass
@@ -59,27 +92,48 @@ def _snippet(text: str, start: int, end: int) -> str:
     return ("…" if a > 0 else "") + s + ("…" if b < len(text) else "")
 
 
-def _documents(place: Place, site: SiteData | None) -> list[tuple[str, str]]:
-    """(where, text) pairs searched for keywords."""
-    docs = [("Google Maps name", place.name), ("Google Maps category", " / ".join(place.categories or [place.category]))]
+def _documents(place: Place, site: SiteData | None) -> list[Doc]:
+    """Every piece of text searched for keywords, tagged with how prominent it is."""
+    docs = [
+        Doc("Google Maps name", STRONG, place.name),
+        Doc("Google Maps category", STRONG, " / ".join(place.categories or [place.category])),
+    ]
     if site is not None:
-        for page in site.pages:
-            docs.append((page.url, f"{page.title} {page.text}"))
-    return [(w, t) for w, t in docs if t]
+        if site.signals:
+            docs.append(Doc("Website signals", STRONG, " · ".join(site.signals)))
+        for i, page in enumerate(site.pages):
+            prominent = " · ".join(x for x in (page.title, page.description, page.headings) if x)
+            docs.append(Doc(page.url, STRONG, prominent, i))
+            docs.append(Doc(page.url, BODY, page.text, i))
+            docs.append(Doc(page.url, CHROME, page.chrome, i))
+    return [d for d in docs if d.text]
 
 
-def find_term(term: str, docs: list[tuple[str, str]]) -> tuple[int, list[dict]]:
+def find_term(term: str, docs: list[Doc]) -> KeywordMatch:
     rx = compile_term(term)
-    count, snippets = 0, []
-    for where, text in docs:
-        for m in rx.finditer(text):
-            count += 1
-            if len(snippets) >= MAX_SNIPPETS or any(s["where"] == where for s in snippets):
-                continue
-            snippet = _snippet(text, m.start(), m.end())
-            if not any(s["text"] == snippet for s in snippets):
-                snippets.append({"where": where, "text": snippet})
-    return count, snippets
+    match = KeywordMatch(term, 1.0)
+    pages: set[int] = set()
+    best = None
+    for doc in docs:
+        hits = list(rx.finditer(doc.text))
+        if not hits:
+            continue
+        match.count += len(hits)
+        if doc.page is not None:
+            pages.add(doc.page)
+        if best is None or ZONE_CREDIT[doc.zone] > ZONE_CREDIT[best]:
+            best = doc.zone
+        if len(match.snippets) >= MAX_SNIPPETS or any(s["where"] == doc.where for s in match.snippets):
+            continue
+        snippet = _snippet(doc.text, hits[0].start(), hits[0].end())
+        if not any(s["text"] == snippet for s in match.snippets):
+            match.snippets.append({"where": doc.where, "zone": ZONE_LABEL[doc.zone], "text": snippet})
+    if best is not None:
+        credit = ZONE_CREDIT[best] + 0.1 * min(max(len(pages) - 1, 0), 2) + (0.1 if match.count >= 5 else 0)
+        match.credit = round(min(credit, 1.0), 2)
+        match.pages = len(pages)
+        match.zone = ZONE_LABEL[best]
+    return match
 
 
 def _any_contains(haystacks: list[str], needles: list[str]) -> str | None:
@@ -128,30 +182,33 @@ def evaluate(place: Place, site: SiteData | None, profile: ICPProfile, pre_reaso
     positive_total = sum(k.weight for k in profile.keywords if k.weight > 0)
     gained = 0.0
     for kw in profile.keywords:
-        count, snippets = find_term(kw.term, docs)
-        if count:
-            matches.append(KeywordMatch(kw.term, kw.weight, count, snippets))
-            gained += kw.weight
+        m = find_term(kw.term, docs)
+        if m.count:
+            m.weight = kw.weight
+            matches.append(m)
+            gained += kw.weight * m.credit
     score: int | None = None
     if profile.keywords and positive_total > 0:
         score = max(0, min(100, round(100 * gained / positive_total)))
-    matches.sort(key=lambda m: (-m.weight, -m.count))
+    matches.sort(key=lambda m: (-m.weight * m.credit, -m.count))
 
-    required_found = [t for t in profile.required_keywords if find_term(t, docs)[0]]
+    required_found = [t for t in profile.required_keywords if find_term(t, docs).count]
     if profile.required_keywords and not required_found:
         reasons.append("none of the required keywords found")
 
     excluded_found = []
     for term in profile.exclude_keywords:
-        count, snippets = find_term(term, docs)
-        if count:
+        m = find_term(term, docs)
+        if m.count:
             excluded_found.append(term)
-            matches.append(KeywordMatch(f"NOT: {term}", 0, count, snippets))
+            m.term, m.weight = f"NOT: {term}", 0
+            matches.append(m)
     if excluded_found:
         reasons.append("excluded keyword: " + ", ".join(excluded_found))
 
-    if profile.filters.require_email and not (site and site.emails):
-        reasons.append("no email found")
+    deliverable = [e for e in (site.emails if site else []) if site.email_checks.get(e) != "invalid"]
+    if profile.filters.require_email and not deliverable:
+        reasons.append("no email found" if not (site and site.emails) else "no deliverable email")
     if score is not None and profile.min_score and score < profile.min_score:
         reasons.append(f"score {score} < {profile.min_score}")
 

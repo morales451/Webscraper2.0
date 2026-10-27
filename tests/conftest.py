@@ -17,8 +17,10 @@ class FakeSource:
     def __init__(self, places_by_query: dict[str, list[Place]]):
         self.places_by_query = places_by_query
         self.closed = False
+        self.calls: list = []
 
-    async def search(self, query: str, limit: int) -> AsyncIterator[Place]:
+    async def search(self, query: str, limit: int, area=None, want=None) -> AsyncIterator[Place]:
+        self.calls.append((query, area))
         for p in self.places_by_query.get(query, [])[:limit]:
             yield Place(**{**p.to_dict(), "query": query})
 
@@ -60,6 +62,23 @@ def site_handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, text=body, headers={"content-type": "text/html; charset=utf-8"})
 
 
+class FakeMx:
+    """Offline stand-in for the DNS email check: *.dead domains can't receive mail."""
+
+    async def check_emails(self, emails):
+        return {e: ("invalid" if e.endswith(".dead") else "ok") for e in emails}
+
+    async def close(self):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def offline_mx(monkeypatch):
+    from prospector import pipeline
+
+    monkeypatch.setattr(pipeline, "MxChecker", FakeMx)
+
+
 @pytest.fixture
 def mock_http() -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(site_handler), follow_redirects=True)
@@ -72,6 +91,7 @@ def settings(tmp_path) -> Settings:
     s.profiles_dir.mkdir()
     s.render_js = False
     s.site_concurrency = 3
+    s.search_delay = 0
     return s
 
 

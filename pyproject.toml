@@ -17,6 +17,7 @@ dependencies = [
     "openpyxl>=3.1",
     "pydantic>=2.5",
     "playwright>=1.44",
+    "anthropic>=2.3",
 ]
 
 [project.optional-dependencies]

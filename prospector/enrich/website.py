@@ -1,6 +1,6 @@
 """Crawl a business website: home page plus its most useful inner pages (contact, about,
-services...). Returns the visible text of each page for keyword matching, and any email
-addresses found along the way."""
+services...). Returns each page's text (split into zones for scoring), plus the emails,
+phone numbers, social profiles and website signals found along the way."""
 
 from __future__ import annotations
 
@@ -13,14 +13,15 @@ from urllib.robotparser import RobotFileParser
 import httpx
 from bs4 import BeautifulSoup
 
-from .emails import extract_emails, rank_emails
+from .emails import rank_emails
+from .page import ParsedPage, parse_page
+from .signals import merge_signals
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 MAX_HTML_BYTES = 3_000_000
-MAX_TEXT_CHARS = 200_000
 THIN_TEXT_CHARS = 400  # below this, the page is probably rendered by JavaScript
 
 # Interstitials served by bot-protection services instead of the real page. When a site
@@ -50,6 +51,10 @@ PAGE_HINTS = [
     (re.compile(r"industr|specialt|expertise|portfolio|projects|work|case-stud", re.I), 4),
     (re.compile(r"location|areas?-we-serve|service-area|faq", re.I), 3),
 ]
+# Tried directly when a site's links don't lead to a contact page (or no email turned up).
+GUESS_PATHS = ("/contact", "/contact-us", "/about", "/about-us")
+CONTACT_RE = re.compile(r"contact|get-in-touch|reach-us", re.I)
+
 SKIP_PAGE_RE = re.compile(
     r"login|log-in|signin|sign-in|register|cart|checkout|account|privacy|terms|cookie|policy|"
     r"wp-admin|wp-login|feed|tag/|category/|author/|page/\d|\?replytocom|blog/\d{4}|/\d{4}/\d{2}/",
@@ -61,7 +66,10 @@ SKIP_PAGE_RE = re.compile(
 class PageContent:
     url: str
     title: str
-    text: str
+    text: str  # main body text
+    headings: str = ""
+    description: str = ""
+    chrome: str = ""  # header/nav/footer — only kept for the home page (it repeats on every page)
 
 
 @dataclass
@@ -74,6 +82,10 @@ class SiteData:
     description: str = ""
     pages: list[PageContent] = field(default_factory=list)
     emails: list[str] = field(default_factory=list)
+    email_checks: dict[str, str] = field(default_factory=dict)
+    phones: list[str] = field(default_factory=list)
+    socials: dict[str, str] = field(default_factory=dict)
+    signals: list[str] = field(default_factory=list)
     rendered: bool = False
 
     @property
@@ -116,38 +128,7 @@ def _same_site(url: str, domain: str) -> bool:
     return d == domain or d.endswith("." + domain) or domain.endswith("." + d)
 
 
-# --------------------------------------------------------------------------- HTML parsing
-def parse_html(html: str, base_url: str, strip_chrome: bool = False) -> tuple[str, str, str, list[tuple[str, str]]]:
-    """Return (title, meta description, visible text, [(absolute link, link text)]).
-
-    ``strip_chrome`` drops the header/nav/footer, which repeat on every page of a site —
-    used for inner pages so the same menu text isn't counted once per page."""
-    soup = BeautifulSoup(html, "lxml")
-    title = soup.title.get_text(" ", strip=True) if soup.title else ""
-    desc_tag = soup.find("meta", attrs={"name": re.compile("^description$", re.I)}) or soup.find(
-        "meta", attrs={"property": "og:description"}
-    )
-    description = (desc_tag.get("content") or "").strip() if desc_tag else ""
-
-    links: list[tuple[str, str]] = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"].strip()
-        if href.startswith(("mailto:", "tel:", "javascript:", "#", "sms:")):
-            continue
-        links.append((urljoin(base_url, href), a.get_text(" ", strip=True)[:80]))
-
-    for tag in soup(["script", "style", "noscript", "svg", "template", "iframe", "head"]):
-        tag.decompose()
-    if strip_chrome:
-        for tag in soup(["header", "nav", "footer"]):
-            tag.decompose()
-    text = soup.get_text(" ", strip=True)
-    text = re.sub(r"\s+", " ", text)[:MAX_TEXT_CHARS]
-    if description and description not in text:
-        text = f"{description} {text}"
-    return title, description, text, links
-
-
+# --------------------------------------------------------------------------- page selection
 def pick_inner_pages(links: list[tuple[str, str]], domain: str, home_url: str, limit: int) -> list[str]:
     scored: dict[str, int] = {}
     home = normalize_url(home_url).rstrip("/")
@@ -305,6 +286,21 @@ class SiteCrawler:
         rp.parse(resp.text.splitlines())
         return rp
 
+    async def _load(self, url: str, inner: bool, use_renderer: bool) -> ParsedPage | None:
+        """Fetch and parse one inner page (None on errors, 404s and bot walls)."""
+        try:
+            final, html = await self._fetch(url)
+        except Exception:
+            return None
+        page = parse_page(html, final, keep_chrome=not inner)
+        if is_challenge_page(page.title, page.text):
+            return None
+        if len(page.text) < THIN_TEXT_CHARS and use_renderer and self.renderer is not None:
+            rendered = await self.renderer.render(url)
+            if rendered:
+                page = parse_page(rendered[1], rendered[0], keep_chrome=not inner)
+        return page
+
     async def crawl(self, url: str) -> SiteData:
         url = normalize_url(url)
         data = SiteData(url=url, domain=site_domain(url))
@@ -339,60 +335,77 @@ class SiteCrawler:
 
         data.url = final_url
         data.domain = site_domain(final_url)
-
         robots = await self._robots(final_url)
 
         def allowed(u: str) -> bool:
             return robots is None or robots.can_fetch("*", u)
 
-        title, description, text, links = parse_html(home_html, final_url)
-        if is_challenge_page(title, text):
+        home = parse_page(home_html, final_url)
+        if is_challenge_page(home.title, home.text):
             data.error = "website blocks automated visitors (bot protection) — check it manually"
             return data
-        if len(text) < THIN_TEXT_CHARS and self.renderer is not None and not data.rendered:
+        if len(home.text) < THIN_TEXT_CHARS and self.renderer is not None and not data.rendered:
             rendered = await self.renderer.render(final_url)
             if rendered:
-                r_title, r_desc, r_text, r_links = parse_html(rendered[1], rendered[0])
-                if len(r_text) > len(text) and not is_challenge_page(r_title, r_text):
-                    title, description, text, links = r_title or title, r_desc or description, r_text, r_links
-                    home_html = rendered[1]
+                r_home = parse_page(rendered[1], rendered[0])
+                if len(r_home.text) > len(home.text) and not is_challenge_page(r_home.title, r_home.text):
+                    home = r_home
                     data.rendered = True
 
-        data.title, data.description = title, description
-        data.pages.append(PageContent(final_url, title, text))
-        emails = extract_emails(home_html)
+        data.title, data.description = home.title, home.description
+        pages: list[ParsedPage] = [home]
 
-        inner = [u for u in pick_inner_pages(links, data.domain, final_url, self.max_pages - 1) if allowed(u)]
+        origin = f"{urlparse(final_url).scheme}://{urlparse(final_url).netloc}"
+        inner = pick_inner_pages(home.links, data.domain, final_url, self.max_pages - 1)
+        if not any(CONTACT_RE.search(u) for u in inner):
+            # No contact link we could follow (JS menus, image links...): try the usual address.
+            inner = [origin + GUESS_PATHS[0], *inner][: max(self.max_pages - 1, 1)]
+        inner = [u for u in inner if allowed(u)]
+
         sem = asyncio.Semaphore(3)
-
-        async def fetch_inner(u: str):
-            async with sem:
-                try:
-                    f_url, html = await self._fetch(u)
-                except Exception:
-                    return None
-                t, _d, txt, _l = parse_html(html, f_url, strip_chrome=True)
-                if is_challenge_page(t, txt):
-                    return None
-                if len(txt) < THIN_TEXT_CHARS and data.rendered and self.renderer is not None:
-                    rendered = await self.renderer.render(u)
-                    if rendered:
-                        html = rendered[1]
-                        t, _d, txt, _l = parse_html(html, rendered[0], strip_chrome=True)
-                return PageContent(f_url, t, txt), extract_emails(html)
-
         seen_urls = {normalize_url(final_url).rstrip("/")}
-        for result in await asyncio.gather(*(fetch_inner(u) for u in inner)):
-            if result is None:
-                continue
-            page, page_emails = result
+
+        async def load(u: str) -> ParsedPage | None:
+            async with sem:
+                return await self._load(u, inner=True, use_renderer=data.rendered)
+
+        def add(page: ParsedPage | None) -> None:
+            if page is None:
+                return
             key = normalize_url(page.url).rstrip("/")
             if key in seen_urls:
-                continue
+                return
             seen_urls.add(key)
-            data.pages.append(page)
-            emails |= page_emails
+            pages.append(page)
 
+        for page in await asyncio.gather(*(load(u) for u in inner)):
+            add(page)
+
+        # Still no email? Try the usual contact/about addresses we haven't read yet.
+        if not any(p.emails for p in pages):
+            tried = set(seen_urls) | {normalize_url(u).rstrip("/") for u in inner}
+            for path in GUESS_PATHS:
+                guess = origin + path
+                if normalize_url(guess).rstrip("/") in tried or not allowed(guess):
+                    continue
+                tried.add(normalize_url(guess).rstrip("/"))
+                page = await load(guess)
+                add(page)
+                if page is not None and page.emails:
+                    break
+
+        emails: set[str] = set()
+        for page in pages:
+            data.pages.append(PageContent(page.url, page.title, page.body, page.headings, page.description, page.chrome))
+            emails |= page.emails
+            for p in page.phones:
+                if all(p[-10:] != q[-10:] for q in data.phones):
+                    data.phones.append(p)
+            for network, link in page.socials.items():
+                data.socials.setdefault(network, link)
+        data.signals = merge_signals(*(p.signals for p in pages))
+        if final_url.startswith("http://"):
+            data.signals.append("No SSL")
         data.emails = rank_emails(emails, data.domain)
         data.ok = True
         return data

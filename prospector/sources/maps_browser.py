@@ -17,9 +17,11 @@ from pathlib import Path
 from typing import AsyncIterator
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
-from .base import LogFn, Place, SourceError, parse_float, parse_int
+from .base import BlockedError, LogFn, Place, SourceError, parse_float, parse_int
 
 MAPS_SEARCH_URL = "https://www.google.com/maps/search/{query}?hl={lang}"
+# With a map position, Google searches the visible area around it.
+MAPS_AREA_URL = "https://www.google.com/maps/search/{query}/@{lat:.5f},{lng:.5f},{zoom}z?hl={lang}"
 
 # Pull every result card currently rendered in the results feed.
 _CARDS_JS = r"""
@@ -279,7 +281,7 @@ class GoogleMapsBrowserSource:
 
     async def _check_blocked(self, page) -> None:
         if "/sorry/" in page.url or await page.locator("form#captcha-form, #recaptcha").count():
-            raise SourceError(
+            raise BlockedError(
                 "Google is showing a CAPTCHA ('unusual traffic'). Wait a while, run with the browser "
                 "visible (headless off) to solve it, or add a Google Places API key."
             )
@@ -338,11 +340,15 @@ class GoogleMapsBrowserSource:
             await page.wait_for_timeout(1300 + 300 * min(stale_rounds, 3))
         return list(places.values())[:limit]
 
-    async def search(self, query: str, limit: int) -> AsyncIterator[Place]:
+    async def search(self, query: str, limit: int, area=None, want=None) -> AsyncIterator[Place]:
         context = await self._ensure_context()
         page = await context.new_page()
         try:
-            url = MAPS_SEARCH_URL.format(query=quote_plus(query), lang=self.language)
+            if area is not None:
+                lat, lng = area.center
+                url = MAPS_AREA_URL.format(query=quote_plus(query), lat=lat, lng=lng, zoom=area.maps_zoom(), lang=self.language)
+            else:
+                url = MAPS_SEARCH_URL.format(query=quote_plus(query), lang=self.language)
             await self._open(page, url)
             try:
                 await page.wait_for_selector("div[role='feed'], div[role='main'] h1", timeout=25000)
@@ -366,9 +372,20 @@ class GoogleMapsBrowserSource:
         finally:
             await page.close()
 
+        if want is not None:
+            # Don't open listings we already have (overlapping areas, earlier runs).
+            known = [p for p in cards if not want(p)]
+            cards = [p for p in cards if want(p)]
+            for place in known:
+                yield place
+            if known:
+                self.log(f"Skipped opening {len(known)} listing(s) already found")
+
         if not self.details:
             for place in cards:
                 yield place
+            return
+        if not cards:
             return
 
         queue: asyncio.Queue = asyncio.Queue()

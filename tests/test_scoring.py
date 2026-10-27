@@ -4,12 +4,14 @@ from prospector.scoring import compile_term, evaluate, prefilter
 from prospector.sources.base import Place
 
 
-def site(*texts: str, emails=()) -> SiteData:
-    return SiteData(
-        url="https://x.example/", domain="x.example", ok=True,
-        pages=[PageContent(f"https://x.example/{i}", "", t) for i, t in enumerate(texts)],
-        emails=list(emails),
-    )
+def site(*texts: str, emails=(), headings=("",), chrome=("",), signals=()) -> SiteData:
+    pages = []
+    for i, t in enumerate(texts):
+        pages.append(PageContent(f"https://x.example/{i}", "", t,
+                                 headings=headings[i] if i < len(headings) else "",
+                                 chrome=chrome[i] if i < len(chrome) else ""))
+    return SiteData(url="https://x.example/", domain="x.example", ok=True, pages=pages,
+                    emails=list(emails), signals=list(signals))
 
 
 def test_term_matching_is_whole_word_with_wildcards():
@@ -21,21 +23,42 @@ def test_term_matching_is_whole_word_with_wildcards():
     assert compile_term("c++").search("we write c++ code")
 
 
-def test_score_is_weighted_coverage():
+def test_synonym_groups():
+    rx = compile_term("TPO / single-ply / membrane roof*")
+    assert rx.search("single-ply systems") and rx.search("Membrane roofing") and rx.search("tpo")
+    assert not rx.search("shingles")
+    assert compile_term("24/7").search("open 24/7")  # a slash without spaces is literal
+
+
+def test_placement_and_repetition_change_credit():
+    profile = ICPProfile(name="t", queries=["q"], keywords=["implant*"])
+    menu_only = evaluate(Place(name="A"), site("welcome", chrome=["Implants · Crowns"]), profile)
+    in_text = evaluate(Place(name="A"), site("we place implants"), profile)
+    headline = evaluate(Place(name="A"), site("x", headings=["Dental Implants"]), profile)
+    widely = evaluate(Place(name="A"), site("implants", "implants", "implants"), profile)
+    assert (menu_only.score, in_text.score, headline.score, widely.score) == (40, 70, 90, 90)
+    assert menu_only.matches[0].zone == "menu/footer only" and widely.matches[0].pages == 3
+    many = evaluate(Place(name="A"), site("implants " * 5, headings=["Implants"]), profile)
+    assert many.score == 100
+
+
+def test_score_is_weighted_credit():
     profile = ICPProfile(name="t", queries=["q"], keywords=["implant* | 3", "sedation | 2", "veneers"])
     ev = evaluate(Place(name="A"), site("Implants and veneers", "more implants"), profile)
-    assert ev.score == round(100 * 4 / 6)
+    # implant*: body on 2 pages = 0.8 × 3; veneers: body = 0.7 × 1; sedation missing.
+    assert ev.score == round(100 * (0.8 * 3 + 0.7) / 6)
     assert ev.qualified
     implant = next(m for m in ev.matches if m.term == "implant*")
-    assert implant.count == 2 and len(implant.snippets) == 2
-    assert ev.matches[0].term == "implant*"  # highest weight first
+    assert implant.count == 2 and len(implant.snippets) == 2 and implant.credit == 0.8
+    assert ev.matches[0].term == "implant*"  # biggest contribution first
 
 
-def test_maps_name_and_category_count_as_evidence():
-    profile = ICPProfile(name="t", queries=["q"], keywords=["orthodont*"])
-    ev = evaluate(Place(name="Bright Smiles", category="Orthodontist", categories=["Orthodontist"]), None, profile)
-    assert ev.score == 100
-    assert ev.matches[0].snippets[0]["where"] == "Google Maps category"
+def test_maps_name_category_and_signals_are_strong_evidence():
+    profile = ICPProfile(name="t", queries=["q"], keywords=["orthodont*", "wordpress"])
+    ev = evaluate(Place(name="Bright Smiles", category="Orthodontist", categories=["Orthodontist"]),
+                  site("hello", signals=["WordPress", "Contact form"]), profile)
+    assert ev.score == 90
+    assert ev.matches[0].snippets[0]["where"] in ("Google Maps category", "Website signals")
 
 
 def test_required_exclude_and_min_score():
@@ -47,7 +70,7 @@ def test_required_exclude_and_min_score():
     assert not ev.qualified
     assert "none of the required keywords found" in ev.reasons
     assert "excluded keyword: franchise" in ev.reasons
-    assert "score 50 < 60" in ev.reasons
+    assert "score 35 < 60" in ev.reasons
     assert any(m.term == "NOT: franchise" for m in ev.matches)
 
 
@@ -56,10 +79,14 @@ def test_no_keywords_means_no_score_but_still_qualifies():
     assert ev.score is None and ev.qualified
 
 
-def test_require_email():
+def test_require_email_ignores_undeliverable_addresses():
     profile = ICPProfile(name="t", queries=["q"], filters={"require_email": True})
     assert not evaluate(Place(name="A"), site("x"), profile).qualified
     assert evaluate(Place(name="A"), site("x", emails=["a@x.example"]), profile).qualified
+    dead = site("x", emails=["a@x.dead"])
+    dead.email_checks = {"a@x.dead": "invalid"}
+    ev = evaluate(Place(name="A"), dead, profile)
+    assert not ev.qualified and "no deliverable email" in ev.reasons
 
 
 def test_prefilter_rules():

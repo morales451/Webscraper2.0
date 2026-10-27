@@ -13,9 +13,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from ..config import Settings, load_settings
-from ..export import to_csv, to_xlsx
+from ..export import PRESETS, to_csv, to_xlsx
 from ..icp import ICPProfile, ProfileStore, slugify
 from ..pipeline import RunOptions, execute_run
+from ..scheduler import next_run_at, scheduler_loop
 from ..storage import LEAD_STATUSES, Store
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -34,6 +35,11 @@ class LeadUpdate(BaseModel):
     notes: str | None = None
 
 
+class BulkUpdate(BaseModel):
+    ids: list[int]
+    status: str
+
+
 class JobManager:
     """Runs searches as background asyncio tasks inside the server process."""
 
@@ -42,10 +48,15 @@ class JobManager:
         self.store = store
         self.tasks: dict[int, asyncio.Task] = {}
         self.cancels: dict[int, asyncio.Event] = {}
+        self.profile_of: dict[int, str | None] = {}
 
-    def start(self, run_id: int, profile: ICPProfile, options: RunOptions) -> None:
+    def is_profile_running(self, profile_id: str) -> bool:
+        return any(pid == profile_id for rid, pid in self.profile_of.items() if rid in self.tasks)
+
+    def start(self, run_id: int, profile: ICPProfile, options: RunOptions, profile_id: str | None = None) -> None:
         cancel = asyncio.Event()
         self.cancels[run_id] = cancel
+        self.profile_of[run_id] = profile_id
 
         async def runner():
             try:
@@ -55,6 +66,7 @@ class JobManager:
             finally:
                 self.tasks.pop(run_id, None)
                 self.cancels.pop(run_id, None)
+                self.profile_of.pop(run_id, None)
 
         self.tasks[run_id] = asyncio.create_task(runner())
 
@@ -72,15 +84,26 @@ class JobManager:
             await asyncio.wait(list(self.tasks.values()), timeout=15)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, enable_scheduler: bool = True) -> FastAPI:
     settings = settings or load_settings()
     store = Store(settings.db_path)
     profiles = ProfileStore(settings.profiles_dir)
     jobs = JobManager(settings, store)
 
+    def start_scheduled(slug: str, profile: ICPProfile) -> int:
+        source = settings.resolved_source()
+        run_id = store.create_run(profile.model_dump(), slug, source, len(profile.search_terms()), trigger="schedule")
+        jobs.start(run_id, profile, RunOptions(source=source), slug)
+        return run_id
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        ticker = None
+        if enable_scheduler:
+            ticker = asyncio.create_task(scheduler_loop(profiles, store, start_scheduled, jobs.is_profile_running))
         yield
+        if ticker is not None:
+            ticker.cancel()
         await jobs.shutdown()
         store.close()
 
@@ -103,8 +126,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def put_settings(body: dict[str, Any]):
         updates = dict(body)
         # The masked key comes back unchanged from the form; only save a real new value.
-        if "places_api_key" in updates and ("…" in str(updates["places_api_key"]) or updates["places_api_key"] == "set"):
-            updates.pop("places_api_key")
+        for name in ("places_api_key", "anthropic_api_key"):
+            if name in updates and ("…" in str(updates[name]) or updates[name] == "set"):
+                updates.pop(name)
         try:
             settings.save_overrides(updates)
         except ValueError as exc:
@@ -114,7 +138,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------------ profiles
     @app.get("/api/profiles")
     def list_profiles():
-        return profiles.list()
+        items = profiles.list()
+        for item in items:
+            if "error" not in item and item.get("schedule"):
+                when = next_run_at(ICPProfile.model_validate({k: v for k, v in item.items() if k != "id"}),
+                                   store.schedule_state(item["id"]))
+                item["next_run_at"] = when.isoformat() if when else None
+        return items
 
     @app.get("/api/profiles/{slug}")
     def get_profile(slug: str):
@@ -162,7 +192,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if source == "api" and not settings.places_api_key:
             raise HTTPException(422, "Add a Google Places API key in Settings to use the API source.")
         run_id = store.create_run(profile.model_dump(), req.profile_id, source, len(profile.search_terms()))
-        jobs.start(run_id, profile, RunOptions(source=source, details=req.details, enrich=req.enrich))
+        jobs.start(run_id, profile, RunOptions(source=source, details=req.details, enrich=req.enrich), req.profile_id)
         return store.get_run(run_id)
 
     @app.get("/api/runs")
@@ -194,11 +224,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True}
 
     # ------------------------------------------------------------------ leads
-    def _query(run_id, qualified, has_email, has_website, min_score, status, q, sort, desc, limit=None, offset=0):
+    def _ids(ids: str | None) -> list[int] | None:
+        if not ids:
+            return None
+        try:
+            return [int(x) for x in ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(422, "ids must be comma-separated numbers")
+
+    def _query(run_id, qualified, has_email, has_website, min_score, status, q, sort, desc,
+               group_chains=False, ids=None, limit=None, offset=0):
         return store.query_leads(
             run_id=run_id, qualified=qualified, has_email=has_email, has_website=has_website,
             min_score=min_score, status=status or None, search=q or None, sort=sort,
-            descending=desc, limit=limit, offset=offset,
+            descending=desc, limit=limit, offset=offset, group_chains=group_chains, ids=_ids(ids),
         )
 
     @app.get("/api/leads")
@@ -212,15 +251,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         q: str | None = None,
         sort: str = "score",
         desc: bool = True,
+        group_chains: bool = False,
         limit: int = Query(200, le=2000),
         offset: int = 0,
     ):
-        leads, total = _query(run_id, qualified, has_email, has_website, min_score, status, q, sort, desc, limit, offset)
+        leads, total = _query(run_id, qualified, has_email, has_website, min_score, status, q, sort, desc,
+                              group_chains, None, limit, offset)
         return {"total": total, "leads": leads}
 
     @app.get("/api/leads/export")
     def export_leads(
         format: str = "csv",
+        preset: str = "standard",
         run_id: int | None = None,
         qualified: bool | None = None,
         has_email: bool | None = None,
@@ -230,19 +272,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         q: str | None = None,
         sort: str = "score",
         desc: bool = True,
+        group_chains: bool = False,
+        ids: str | None = None,
     ):
-        leads, _ = _query(run_id, qualified, has_email, has_website, min_score, status, q, sort, desc)
-        name = f"leads-run{run_id}" if run_id else "leads"
+        if preset not in PRESETS:
+            raise HTTPException(422, f"preset must be one of {', '.join(PRESETS)}")
+        if ids:  # exporting a hand-picked selection: ignore the other filters
+            leads, _ = _query(None, None, None, None, None, None, None, sort, desc, False, ids)
+        else:
+            leads, _ = _query(run_id, qualified, has_email, has_website, min_score, status, q, sort, desc, group_chains)
+        name = ("leads-selected" if ids else f"leads-run{run_id}" if run_id else "leads") + (
+            "" if preset == "standard" else f"-{preset}")
         if format == "xlsx":
             return Response(
-                to_xlsx(leads),
+                to_xlsx(leads, preset),
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 headers={"Content-Disposition": f'attachment; filename="{name}.xlsx"'},
             )
         return Response(
-            to_csv(leads), media_type="text/csv; charset=utf-8",
+            to_csv(leads, preset), media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{name}.csv"'},
         )
+
+    @app.post("/api/leads/bulk")
+    def bulk_update(body: BulkUpdate):
+        try:
+            changed = store.update_leads(body.ids, body.status)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        return {"updated": changed}
+
+    # ------------------------------------------------------------------ health
+    @app.get("/api/health")
+    async def health(browser: bool = True):
+        from ..doctor import run_checks
+
+        return await run_checks(settings, include_browser=browser)
 
     @app.get("/api/leads/{lead_id}")
     def get_lead(lead_id: int):

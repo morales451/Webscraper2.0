@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from ..config import Settings
-from .base import ListingSource, LogFn, Place, SourceError
+from .base import BlockedError, ListingSource, LogFn, Place, SourceError
 from .maps_browser import GoogleMapsBrowserSource
 from .places_api import GooglePlacesApiSource
 
@@ -25,6 +25,7 @@ def make_source(
     return GoogleMapsBrowserSource(
         headless=settings.headless,
         details=details,
+        concurrency=settings.maps_concurrency,
         chromium_path=settings.chromium_path,
         user_data_dir=settings.browser_profile_dir,
         log=log,
@@ -33,6 +34,7 @@ def make_source(
 
 
 __all__ = [
+    "BlockedError",
     "GoogleMapsBrowserSource",
     "GooglePlacesApiSource",
     "ListingSource",

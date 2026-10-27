@@ -6,6 +6,9 @@
   prospector profiles                           # list saved profiles
   prospector runs                               # list past runs
   prospector export --run 3 --out run3.csv      # export a past run
+  prospector search -p roofers --split-areas --max-areas 16   # grid-search big cities
+  prospector export --run 3 --preset hubspot --out hubspot.csv
+  prospector doctor                             # check Google Maps, websites, email checks still work
   prospector setup                              # download Chromium for the browser scraper
   prospector browser-login                      # sign in to Google in the scraper's browser profile
 """
@@ -27,9 +30,9 @@ from .pipeline import RunOptions, execute_run
 from .storage import Store
 
 
-def _write_export(path: Path, leads: list[dict]) -> None:
+def _write_export(path: Path, leads: list[dict], preset: str = "standard") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = to_xlsx(leads) if path.suffix.lower() == ".xlsx" else to_csv(leads)
+    data = to_xlsx(leads, preset) if path.suffix.lower() == ".xlsx" else to_csv(leads, preset)
     path.write_bytes(data)
     print(f"Saved {len(leads)} lead(s) to {path}")
 
@@ -69,6 +72,16 @@ def cmd_search(args, settings) -> int:
         updates["min_score"] = args.min_score
     if args.include_seen:
         updates["skip_seen"] = False
+    if args.split_areas:
+        updates["split_areas"] = True
+    if args.max_areas:
+        updates["max_areas"] = args.max_areas
+    if args.expand:
+        updates["expand_queries"] = True
+    if args.ai_notes:
+        updates["ai_notes"] = True
+    if args.no_email_check:
+        updates["check_emails"] = False
     if updates:
         profile = ICPProfile.model_validate({**profile.model_dump(), **updates})
 
@@ -84,6 +97,8 @@ def cmd_search(args, settings) -> int:
         score = "" if lead["score"] is None else f"{lead['score']:>3}"
         email = (lead["emails"] or [""])[0]
         print(f"  {mark} {score:>3}  {lead['name'][:40]:<40}  {email}")
+        if lead.get("ai_note"):
+            print(f"         AI: {lead['ai_note']}")
 
     try:
         run = asyncio.run(execute_run(settings, store, run_id, profile, options, on_log=lambda m: print(f"» {m}"), on_lead=on_lead))
@@ -96,8 +111,11 @@ def cmd_search(args, settings) -> int:
     print(f"\nRun #{run_id}: {run.get('status')} — {run.get('qualified', 0)} qualified of {run.get('processed', 0)} checked")
     if run.get("error"):
         print(f"Problem: {run['error']}")
+    if run.get("suggestions"):
+        print("Keyword ideas (common on your best leads' sites): "
+              + ", ".join(s["term"] for s in run["suggestions"][:10]))
     if args.out:
-        _write_export(Path(args.out), leads)
+        _write_export(Path(args.out), leads, args.preset)
     elif leads:
         print(f"Export with: prospector export --run {run_id} --out leads.xlsx")
     return 0 if run.get("status") == "done" else 1
@@ -128,9 +146,25 @@ def cmd_export(args, settings) -> int:
         run_id=args.run,
         qualified=None if args.all else True,
         has_email=True if args.with_email else None,
+        group_chains=args.group_chains,
     )
-    _write_export(Path(args.out), leads)
+    _write_export(Path(args.out), leads, args.preset)
     return 0
+
+
+def cmd_doctor(args, settings) -> int:
+    from .doctor import run_checks
+
+    print("Checking each part of the pipeline (takes ~20 seconds)…")
+    results = asyncio.run(run_checks(settings, include_browser=not args.skip_browser))
+    labels = {"google_maps_browser": "Google Maps (browser)", "places_api": "Google Places API",
+              "website_crawler": "Website crawler", "email_check": "Email domain check", "area_split": "Area splitting"}
+    failed = False
+    for key, result in results.items():
+        mark = "✓" if result["ok"] else ("–" if result["ok"] is None else "✗")
+        failed |= result["ok"] is False
+        print(f"  {mark} {labels.get(key, key):<24} {result['message']}")
+    return 1 if failed else 0
 
 
 def cmd_serve(args, settings) -> int:
@@ -199,6 +233,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-website", action="store_true", help="Skip crawling websites")
     s.add_argument("--include-seen", action="store_true", help="Include businesses found in earlier runs")
     s.add_argument("--visible", action="store_true", help="Show the browser window while scraping")
+    s.add_argument("--split-areas", action="store_true", help="Search each location as a grid of smaller areas")
+    s.add_argument("--max-areas", type=int, help="Max grid areas per location (default 9)")
+    s.add_argument("--expand", action="store_true", help="Also search related categories found on qualified leads")
+    s.add_argument("--ai-notes", action="store_true", help="Add a one-line Claude fit note to qualified leads")
+    s.add_argument("--no-email-check", action="store_true", help="Don't check that email domains accept mail")
+    s.add_argument("--preset", choices=["standard", "hubspot", "outreach"], default="standard",
+                   help="Export layout for --out")
     s.add_argument("--all", action="store_true", help="Export unqualified leads too")
     s.add_argument("--out", "-o", help="Save results to .csv or .xlsx")
     s.set_defaults(func=cmd_search)
@@ -214,6 +255,9 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--run", type=int, help="Run id (default: every run)")
     e.add_argument("--all", action="store_true", help="Include unqualified leads")
     e.add_argument("--with-email", action="store_true", help="Only leads with an email address")
+    e.add_argument("--group-chains", action="store_true", help="One row per website (best-scoring branch)")
+    e.add_argument("--preset", choices=["standard", "hubspot", "outreach"], default="standard",
+                   help="standard = everything; hubspot = HubSpot import; outreach = cold-email tools")
     e.add_argument("--out", "-o", required=True)
     e.set_defaults(func=cmd_export)
 
@@ -222,6 +266,10 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--port", type=int)
     v.add_argument("--no-browser", action="store_true", help="Don't open the dashboard automatically")
     v.set_defaults(func=cmd_serve)
+
+    d = sub.add_parser("doctor", help="Check that Google Maps scraping, websites and email checks work")
+    d.add_argument("--skip-browser", action="store_true", help="Skip the Google Maps browser check")
+    d.set_defaults(func=cmd_doctor)
 
     st = sub.add_parser("setup", help="Download Chromium for the browser scraper")
     st.set_defaults(func=cmd_setup)

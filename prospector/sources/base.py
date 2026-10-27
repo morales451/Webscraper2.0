@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from typing import AsyncIterator, Callable, Protocol
+from typing import TYPE_CHECKING, AsyncIterator, Callable, Protocol
+
+if TYPE_CHECKING:
+    from ..geo import Area
 
 
 class SourceError(RuntimeError):
     """A listing source failed in a way the user should see (bad API key, blocked, ...)."""
+
+
+class BlockedError(SourceError):
+    """Google is showing a CAPTCHA / 'unusual traffic' page. Waiting usually clears it."""
 
 
 @dataclass
@@ -47,8 +54,13 @@ LogFn = Callable[[str], None]
 class ListingSource(Protocol):
     name: str
 
-    def search(self, query: str, limit: int) -> AsyncIterator[Place]:
-        """Yield up to ``limit`` places for a free-text query like 'dentist in Austin, TX'."""
+    def search(
+        self, query: str, limit: int, area: "Area | None" = None, want: "Callable[[Place], bool] | None" = None
+    ) -> AsyncIterator[Place]:
+        """Yield up to ``limit`` places for a free-text query like 'dentist in Austin, TX',
+        or for a bare query ('dentist') restricted to ``area``. Sources that fetch details per
+        listing skip that work for places where ``want(place)`` is False (already known) and
+        yield them as-is."""
         ...
 
     async def close(self) -> None: ...

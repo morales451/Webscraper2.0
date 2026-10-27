@@ -108,6 +108,24 @@
             <label class="check pad"><input type="checkbox" name="details" checked> Open each listing (full address &amp; phone)</label>
             <label class="check pad"><input type="checkbox" name="enrich" checked> Visit websites (emails &amp; keywords)</label>
           </div>
+          <div class="grid2">
+            <label class="check top"><input type="checkbox" name="split_areas">
+              <span>Split big cities into areas<span class="muted small block">finds far more businesses; one search per area</span></span></label>
+            <label>Max areas per location <input name="max_areas" type="number" min="1" max="64" value="9"></label>
+            <label class="check top"><input type="checkbox" name="expand_queries">
+              <span>Also search related categories<span class="muted small block">Google categories common on your qualified leads</span></span></label>
+            <label class="check top"><input type="checkbox" name="check_emails" checked>
+              <span>Check emails can receive mail<span class="muted small block">flags dead or mistyped domains</span></span></label>
+            <label class="check top"><input type="checkbox" name="ai_notes">
+              <span>AI fit note on qualified leads<span class="muted small block" id="ai-hint">needs an Anthropic API key</span></span></label>
+            <label>Repeat automatically
+              <select name="schedule">
+                <option value="">Never</option>
+                <option value="daily">Daily (new businesses only)</option>
+                <option value="weekly">Weekly (new businesses only)</option>
+              </select>
+            </label>
+          </div>
         </details>
 
         <div class="error" id="form-error" hidden></div>
@@ -136,6 +154,7 @@
           <div class="progress"><div class="bar" id="run-bar"></div></div>
           <div class="stats" id="run-stats"></div>
           <div class="error" id="run-error" hidden></div>
+          <div class="suggestions" id="run-suggestions" hidden></div>
           <details class="log"><summary>Activity log</summary><ol id="run-log"></ol></details>
           <div class="table-wrap compact"><table class="leads"><thead><tr>
             <th>Score</th><th>Business</th><th>Email</th><th>Matched</th>
@@ -163,13 +182,27 @@
         </select>
         <select id="lf-status"><option value="">Any status</option></select>
         <label class="inline">Min score <input id="lf-score" type="number" min="0" max="100" style="width:4.5em"></label>
+        <label class="check inline"><input type="checkbox" id="lf-chains"> Group chains</label>
         <span class="grow"></span>
+        <select id="export-preset" title="Export layout">
+          <option value="standard">All columns</option>
+          <option value="hubspot">HubSpot import</option>
+          <option value="outreach">Cold-email tool</option>
+        </select>
         <button id="export-csv">Export CSV</button>
         <button id="export-xlsx" class="primary">Export Excel</button>
+      </div>
+      <div class="bulkbar" id="bulkbar" hidden>
+        <b id="bulk-count"></b>
+        <label class="inline">Set status <select id="bulk-status"></select></label>
+        <button class="small-btn" id="bulk-apply">Apply</button>
+        <button class="small-btn" id="bulk-export">Export selected</button>
+        <button class="small-btn ghost" id="bulk-clear">Clear selection</button>
       </div>
       <div class="muted small" id="lf-summary"></div>
       <div class="table-wrap"><table class="leads sortable">
         <thead><tr>
+          <th class="sel"><input type="checkbox" id="sel-all" title="Select all shown"></th>
           <th data-sort="score">Score</th>
           <th data-sort="name">Business</th>
           <th>Email</th>
@@ -227,10 +260,25 @@
       <div class="grid2">
         <label>Websites crawled in parallel <input name="site_concurrency" type="number" min="1" max="32"></label>
         <label>Website timeout (seconds) <input name="request_timeout" type="number" min="3" max="120"></label>
+        <label>Pause between Maps searches (seconds) <input name="search_delay" type="number" min="0" max="60" step="0.5"></label>
+        <label>Listings opened in parallel <input name="maps_concurrency" type="number" min="1" max="8"></label>
       </div>
+      <h3 style="margin-top:8px">AI fit notes (optional)</h3>
+      <label>Anthropic API key <span class="muted" id="ai-key-state"></span>
+        <input name="anthropic_api_key" type="password" placeholder="sk-ant-…  (leave blank to keep current)">
+      </label>
+      <label>Model <input name="ai_model" placeholder="claude-opus-5-5"></label>
+      <p class="hint">Claude reads each qualified lead's website and writes one line on why it fits. Costs roughly
+        1–2¢ per lead with the default model; a smaller model such as <code>claude-haiku-5-5</code> is far cheaper.</p>
       <div class="row actions"><button type="submit" class="primary">Save settings</button><span class="muted small" id="settings-saved"></span></div>
       <p class="muted small">Data folder: <code id="data-dir"></code></p>
     </form>
+    <div class="card form narrow" style="margin-top:16px">
+      <div class="row between"><h2>Health check</h2><button id="health-btn">Run health check</button></div>
+      <p class="hint">Checks that Google Maps scraping, website reading, email checks and area splitting still work.
+        Google changes its pages now and then — run this if searches suddenly return nothing.</p>
+      <ul class="health" id="health-list"></ul>
+    </div>
   </section>
 </main>
 

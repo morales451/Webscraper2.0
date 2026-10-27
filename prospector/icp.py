@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -93,6 +93,17 @@ class ICPProfile(BaseModel):
     pages_per_site: int = Field(default=5, ge=1, le=20)
     min_score: int = Field(default=0, ge=0, le=100)
     skip_seen: bool = True
+    # Coverage: search each location as a grid of smaller areas (finds far more businesses).
+    split_areas: bool = False
+    max_areas: int = Field(default=9, ge=1, le=64)
+    # After the planned searches, also search Google categories common among qualified leads.
+    expand_queries: bool = False
+    # Check that each email's domain can receive mail.
+    check_emails: bool = True
+    # One-line Claude note on why each qualified lead fits (needs an Anthropic API key).
+    ai_notes: bool = False
+    # Re-run automatically while the dashboard is open: "", "daily" or "weekly".
+    schedule: Literal["", "daily", "weekly"] = ""
 
     @field_validator("queries", "locations", "required_keywords", "exclude_keywords", mode="before")
     @classmethod
@@ -126,6 +137,11 @@ class ICPProfile(BaseModel):
 
     def to_yaml_dict(self) -> dict:
         data = self.model_dump(exclude_none=True)
+        # Leave optional switches out of the file while they're at their defaults.
+        for key, default in (("split_areas", False), ("max_areas", 9), ("expand_queries", False),
+                             ("check_emails", True), ("ai_notes", False), ("schedule", "")):
+            if data.get(key) == default:
+                data.pop(key, None)
         data["keywords"] = [k.term if k.weight == 1 else {k.term: k.weight} for k in self.keywords]
         defaults = Filters().model_dump(exclude_none=True)
         data["filters"] = {k: v for k, v in data["filters"].items() if defaults.get(k, object()) != v}

@@ -52,7 +52,9 @@ async def test_crawl_collects_pages_and_emails(mock_http):
     ]
     assert data.emails == ["billing@smile.example", "hello@smile.example"] or set(data.emails) == {
         "hello@smile.example", "billing@smile.example"}
-    assert "Family and implant dentistry" in data.pages[0].text  # meta description is searchable
+    assert data.pages[0].description == "Family and implant dentistry"
+    assert data.pages[0].chrome == "Contact About Old post"  # nav text kept apart from body text
+    assert data.socials == {"facebook": "https://facebook.com/smile"}
 
 
 async def test_crawl_respects_robots(mock_http):
